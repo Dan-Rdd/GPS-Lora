@@ -1,0 +1,102 @@
+#include <SPI.h>
+#include <LoRa.h>
+#include "TFT_eSPI.h"
+
+TFT_eSPI tft = TFT_eSPI();
+#define ss 5
+#define rst 34
+#define dio0 35
+
+volatile bool isReadyToShow = false;
+float currentLatitude = 0.00;
+float currentLongtitude = 0.00;
+String Latitude;
+String Longtitude;
+
+void setup() {
+  Serial.begin(115200);
+
+  tft.begin();
+  tft.setRotation(3);
+
+  isReadyToShow = false;
+  initScreen();
+ 
+  Serial.println("LoRa Receiver Callback");
+ 
+  LoRa.setPins(ss, rst, dio0);
+ 
+  if (!LoRa.begin(473E6)) {
+    Serial.println("Starting LoRa failed!");
+    while (1);
+  }
+ 
+  // register the receive callback
+  LoRa.onReceive(onReceive);
+ 
+  // put the radio into receive mode
+  LoRa.receive();
+}
+ 
+void loop() {
+  // If ISR set the flag, perform read operations
+  if (isReadyToShow) {
+//    readMessage();
+    
+    //Serial.print();
+    float testlat = Latitude.toFloat();
+    float testlong = Longtitude.toFloat();
+    Serial.println(testlat);
+    Serial.println(testlong);
+    Serial.println(currentLatitude,6);
+    Serial.println(currentLongtitude,6);
+    isReadyToShow = false;
+    } 
+    delay(1000);
+//    doRead = false; // Set flag back to false so next read will happen only after next ISR event
+    tft.drawString(String(currentLatitude, 6), 360, 120, 4);
+      
+      //prevLatitude = latitude1;
+
+      //float longitude1 = longtitude.toFloat();
+      //if(longitude1 != prevLongitude){
+      //  Serial.print(String(longitude1));
+     tft.drawString(String(currentLongtitude, 6), 360, 160, 4);
+      //}
+     // prevLongitude = longitude1;
+  
+}
+
+void onReceive(int packetSize) {
+    String LoRaData;
+    if (packetSize)
+    {
+      while (LoRa.available())
+      {
+      LoRaData = LoRa.readString();
+      //Serial.println("Created the LoRaData Variable");
+      String latitude = (LoRaData.substring(0,12));
+      Serial.print(latitude);
+      String longtitude = (LoRaData.substring(12,21));
+      Serial.println(longtitude);
+      //Serial.print("Testing Floats");
+      float latFloat = latitude.toFloat();
+      Serial.println(latFloat,6);
+      float longFloat = longtitude.toFloat();
+      Serial.println(longFloat,6);
+      isReadyToShow = true; //(latFloat != currentLatitude) || (longFloat != currentLongtitude);
+      float currentLatitude  = latFloat;
+      float currentLongtitude = longFloat;
+      
+    }   
+    }
+}
+
+
+void initScreen(){
+  tft.fillScreen(TFT_WHITE);
+  tft.setTextSize(1);
+  tft.setTextColor(TFT_RED, TFT_WHITE);
+  tft.setTextDatum(TC_DATUM);
+  tft.drawString("Waiting for GPS...", 240, 140, 4);
+}
