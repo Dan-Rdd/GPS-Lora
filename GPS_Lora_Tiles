@@ -1,0 +1,259 @@
+
+#include "SPI.h"
+#include <TFT_eSPI.h>   
+#include <TJpg_Decoder.h>
+#include <LoRa.h>
+#include <math.h>
+#include <PNGdec.h>
+#include <iostream>
+
+// Include SPIFFS
+#define FS_NO_GLOBALS
+#include <FS.h>
+#include "SPIFFS.h" // Required for ESP32 only
+using std::string;
+
+#define BUTTONSIZE 50
+#define PButtonFrame_X 20
+#define PButtonFrame_Y 240
+#define NButtonFrame_X 90
+#define NButtonFrame_Y 240
+
+TFT_eSPI tft = TFT_eSPI();         // Invoke custom library
+
+#define ss 5
+#define rst 34
+#define dio0 35
+
+//float currentLatitude = 0.00;
+//float currentLongtitude = 0.00;
+String latitude, longtitude;
+String prevCoarseLatitude, prevCoarseLongitude;
+double dlong, dlat;
+
+char zoomBuffer[10];
+int zoomLevel = 17;
+
+//String mapFilename = "";
+String mapFile;
+const long buttonInterval = 500; 
+const int maxZoomLevel = 17;
+const int minZoomLevel = 15;
+const int width = 256;
+char x[9];
+char y[9];
+
+
+long previousMillis = 0;
+
+bool buttonAvailable = false;
+
+bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitmap)
+{
+  if ( y >= tft.height() ) return 0;
+  tft.pushImage(x, y, w, h, bitmap);
+  return 1;
+}
+
+void setup()
+{
+  Serial.begin(115200);
+  
+  Serial.println("LoRa Receiver Callback");
+    
+  Serial.println("\n\n");
+  // Initialise Lora 
+  LoRa.setPins(ss, rst, dio0);
+   if (!LoRa.begin(473E6)) {
+    Serial.println("Starting LoRa failed!");
+    while (1);
+  }
+ 
+  // register the receive callback
+  //LoRa.onReceive();
+  LoRa.onReceive(onReceive);
+  // put the radio into receive mode
+  LoRa.receive();
+ 
+  // Initialise SPIFFS
+  if (!SPIFFS.begin()) {
+    Serial.println("SPIFFS initialisation failed!");
+    while (1) yield(); // Stay here twiddling thumbs waiting
+  }
+  Serial.println("\r\nInitialisation done.");
+
+  // Initialise the TFT
+  tft.begin();
+  tft.fillScreen(TFT_BLACK);
+  tft.setRotation(3);
+  uint16_t calData[5] = {277, 3614, 317, 3509, 1};
+  tft.setTouch(calData);
+
+  initScreen();
+
+  TJpgDec.setJpgScale(1);
+  TJpgDec.setSwapBytes(true);
+  TJpgDec.setCallback(tft_output);
+  
+  menuScreen();
+}
+
+void loop()
+{
+  buttonEvent();
+  
+}
+
+
+// generate the tile name based on gps lat, long
+string getStaticMapImage(double dlat, double dlong){
+
+    double genx = long2tilex(dlong,zoomLevel);
+    double geny = lat2tiley(dlat,zoomLevel);
+    dtostrf(genx, 5, 0, x);
+    dtostrf(geny, 5, 0, y);
+    String xx = x;
+    String yy = y;
+    String MapFile = xx + yy ;
+    Serial.print("New map generated: ");
+    Serial.println(MapFile);
+    return MapFile;
+}
+
+void onReceive(int packetSize) {
+    String LoRaData;
+    if (packetSize)
+    {
+      while (LoRa.available())
+      {
+        bool isMapNeedUpdate = false;
+        LoRaData = LoRa.readString();
+        if(LoRaData != NULL){
+            tft.setTextDatum(TL_DATUM);
+            tft.setTextSize(1);
+            tft.setTextColor(TFT_WHITE, TFT_BLACK);
+            latitude = (LoRaData.substring(0,10));
+            tft.drawString(latitude, 0, 120, 4);
+
+            String coarseLatitude = (LoRaData.substring(0,8));
+            dlat = coarseLatitude.todouble();
+            
+            if(coarseLatitude != prevCoarseLatitude){
+                isMapNeedUpdate = true;
+            }
+            prevCoarseLatitude = coarseLatitude;
+
+            longtitude = (LoRaData.substring(13,23));
+            tft.drawString(longitude, 0, 150, 4);
+            
+            String coarseLongitude = (LoRaData.substring(13,20));
+            dlong = coarseLongtitude.todouble();
+
+            if(coarseLongitude != prevCoarseLongitude){            
+                isMapNeedUpdate = true;
+            }
+            prevCoarseLongitude = coarseLongitude;
+
+            if(isMapNeedUpdate){
+            if(getStaticMapImage(dlat,dlong)){
+              TJpgDec.drawFsJpg(160, 0, mapFile);
+            }
+          }
+            
+        }   
+     }
+  }
+}
+
+int long2tilex(double lon, int z){ 
+  return (int)(floor((lon + 180.0) / 360.0 * (1 << z))); 
+}
+    
+int lat2tiley(double lat, int z){ 
+    double latrad = lat * M_PI/180.0;
+  return (int)(floor((1.0 - asinh(tan(latrad)) / M_PI) / 2.0 * (1 << z))); 
+}
+
+void initScreen(){
+  tft.fillScreen(TFT_WHITE);
+  tft.setTextSize(1);
+  tft.setTextColor(TFT_RED, TFT_WHITE);
+  tft.setTextDatum(TC_DATUM);
+  tft.drawString("Waiting for GPS...", 240, 140, 4);
+}
+
+void errorScreen(){
+  tft.fillScreen(TFT_RED);
+  tft.setTextSize(1);
+  tft.setTextColor(TFT_WHITE, TFT_RED);
+  tft.setTextDatum(TC_DATUM);
+  tft.drawString("No GPS detected: Check Lora Data", 240, 140, 4);
+}
+
+
+void menuScreen(){
+  tft.fillScreen(TFT_BLACK);
+  plusBtn();
+  negativeBtn();
+  showingZoomLevel();
+  TJpgDec.drawFsJpg(160, 0, mapFile); //previous saved image
+}
+
+void plusBtn(){
+  tft.fillRect(PButtonFrame_X, PButtonFrame_Y, BUTTONSIZE, BUTTONSIZE, TFT_GREEN);
+  tft.setTextColor(TFT_WHITE);
+  tft.setTextSize(2);
+  tft.setTextDatum(MC_DATUM);
+  tft.drawString("+", PButtonFrame_X + (BUTTONSIZE / 2) + 1, PButtonFrame_Y + (BUTTONSIZE / 2));
+}
+
+void negativeBtn(){
+  tft.fillRect(NButtonFrame_X, NButtonFrame_Y, BUTTONSIZE, BUTTONSIZE, TFT_RED);
+  tft.setTextColor(TFT_WHITE);
+  tft.setTextSize(2);
+  tft.setTextDatum(MC_DATUM);
+  tft.drawString("-", NButtonFrame_X + (BUTTONSIZE / 2) + 1, NButtonFrame_Y + (BUTTONSIZE / 2));
+}
+
+void showingZoomLevel(){
+  sprintf(zoomBuffer, "Zoom : %02d", zoomLevel);
+  
+  tft.setTextDatum(TL_DATUM);
+  tft.setTextSize(2);
+  tft.drawString(zoomBuffer, 20, 200);
+}
+
+void buttonEvent(){
+  uint16_t x, y;
+  unsigned long currentMillis = millis();
+  if(currentMillis - previousMillis > buttonInterval){
+    previousMillis = currentMillis;
+    buttonAvailable = false;
+  }
+
+  if(tft.getTouch(&x, &y) && !buttonAvailable){
+    if((x > PButtonFrame_X) && (x < (PButtonFrame_X + BUTTONSIZE))){
+      if((y > PButtonFrame_Y) && (x < (PButtonFrame_Y + BUTTONSIZE))){
+        buttonAvailable = true;
+
+        zoomLevel++;
+        if(zoomLevel > maxZoomLevel){
+          zoomLevel = maxZoomLevel;
+        }
+      }
+    }
+
+    if((x > NButtonFrame_X) && (x < (NButtonFrame_X + BUTTONSIZE))){
+      if((y > NButtonFrame_Y) && (x < (NButtonFrame_Y + BUTTONSIZE))){
+        buttonAvailable = true;
+
+        zoomLevel--;
+        if(zoomLevel < minZoomLevel){
+          zoomLevel = minZoomLevel;
+        }
+      }
+    }
+
+    showingZoomLevel();
+  }
+}
